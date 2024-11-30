@@ -42,7 +42,7 @@ export type Task<A extends string = never> = {
   choices?: Delayed<{ [id: number]: number | string }>;
   limit?: Limit;
   outfit?: Delayed<OutfitSpec | Outfit>;
-  combat?: CombatStrategy<A>;
+  combat?: Delayed<CombatStrategy<A>>;
 };
 
 export type StrictCombatTask<
