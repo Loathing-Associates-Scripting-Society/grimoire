@@ -222,8 +222,10 @@ export class Engine<A extends string = never, T extends Task<A> = Task<A>> {
 
     const outfit = new Outfit();
     if (spec !== undefined) {
-      if (!outfit.equip(spec) && !this.options.allow_partial_outfits) {
-        throw `Unable to equip all items for ${task.name}`;
+      if (this.options.allow_partial_outfits) {
+        outfit.equip(spec); // ignore return value
+      } else {
+        outfit.forceEquip(spec, undefined, task.name);
       }
     }
     return outfit;

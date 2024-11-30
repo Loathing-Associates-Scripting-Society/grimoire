@@ -103,6 +103,51 @@ const modeableCommands = [
   "jillcandle",
 ] as const;
 
+export type EquipResult =
+  | {
+      success: true;
+    }
+  | {
+      success: false;
+      reason: string;
+    };
+
+/**
+ * Create an EquipResult indicating failure.
+ *
+ * @param msg A message to explain the failure.
+ */
+function fail(msg: string): EquipResult {
+  return {
+    success: false,
+    reason: msg,
+  };
+}
+
+/**
+ * Create an EquipResult indicating success.
+ */
+function success(): EquipResult {
+  return {
+    success: true,
+  };
+}
+
+/**
+ * Return success if any of the subcalls are success.
+ * Otherwise, merge all the error messages.
+ */
+function mergeResults(results: EquipResult[]) {
+  if (results.find((r) => r.success)) return success();
+  const failures = results.filter((r) => !r.success) as { reason: string }[];
+  return fail(
+    failures
+      .filter((r) => r.reason !== "")
+      .map((r) => r.reason)
+      .join(". ")
+  );
+}
+
 export class Outfit {
   equips: Map<Slot, Item> = new Map<Slot, Item>();
   riders: Map<Slot, Familiar> = new Map<Slot, Familiar>();
@@ -154,11 +199,21 @@ export class Outfit {
     return [...this.equips.values()].filter((i) => i === item).length;
   }
 
-  private isAvailable(item: Item): boolean {
-    if (this.avoid?.includes(item)) return false;
-    if (!have(item, this.equippedAmount(item) + 1)) return false;
-    if (booleanModifier(item, "Single Equip") && this.equippedAmount(item) > 0) return false;
-    return true;
+  private isAvailable(item: Item): EquipResult {
+    if (this.avoid?.includes(item))
+      return fail(`Cannot equip ${item} since it is on the avoid list (${this.avoid.join(", ")})`);
+    if (!have(item, this.equippedAmount(item) + 1)) {
+      if (!have(item)) {
+        return fail(`Cannot equip ${item} since you do not have any`);
+      } else {
+        return fail(
+          `Cannot equip ${item} again since you do not have ${this.equippedAmount(item) + 1}`
+        );
+      }
+    }
+    if (booleanModifier(item, "Single Equip") && this.equippedAmount(item) > 0)
+      return fail(`Cannot equip ${item} again since you already have one equipped`);
+    return success();
   }
 
   /**
@@ -169,60 +224,86 @@ export class Outfit {
     return this.equips.get(slot) === item;
   }
 
-  private equipItemNone(item: Item, slot?: Slot): boolean {
-    if (item !== $item.none) return false;
-    if (slot === undefined) return true;
-    if (this.equips.has(slot)) return false;
+  private equipItemNone(item: Item, slot?: Slot): EquipResult {
+    if (item !== $item.none) return fail("");
+    if (slot === undefined) return success();
+    if (this.equips.has(slot))
+      return fail(`Cannot equip ${item} to ${slot} since ${this.equips.get(slot)} is equipped`);
     this.equips.set(slot, item);
-    return true;
+    return success();
   }
 
-  private equipNonAccessory(item: Item, slot?: Slot) {
-    if ($slots`acc1, acc2, acc3`.includes(toSlot(item))) return false;
-    if (slot !== undefined && slot !== toSlot(item)) return false;
-    if (this.equips.has(toSlot(item))) return false;
-    switch (toSlot(item)) {
+  private equipNonAccessory(item: Item, slot?: Slot): EquipResult {
+    if ($slots`acc1, acc2, acc3`.includes(toSlot(item))) return fail("");
+    if (slot !== undefined && slot !== toSlot(item))
+      return fail(`Cannot equip ${item} to ${slot} since it is ${toSlot(item)}`);
+    slot = toSlot(item);
+    if (this.equips.has(slot))
+      return fail(`Cannot equip ${item} to ${slot} since ${this.equips.get(slot)} is equipped`);
+    switch (slot) {
       case $slot`off-hand`:
         if (this.equips.has($slot`weapon`) && weaponHands(this.equips.get($slot`weapon`)) !== 1) {
-          return false;
+          return fail(
+            `Cannot equip ${item} to ${slot} since the weapon ${this.equips.get(
+              $slot`weapon`
+            )} is not 1-handed`
+          );
         }
         break;
       case $slot`familiar`:
-        if (this.familiar !== undefined && !canEquip(this.familiar, item)) return false;
+        if (this.familiar !== undefined && !canEquip(this.familiar, item))
+          return fail(`Cannot equip ${item} to ${slot} since familiar is ${this.familiar}`);
     }
-    if (toSlot(item) !== $slot`familiar` && !canEquip(item)) return false;
-    this.equips.set(toSlot(item), item);
-    return true;
+    if (slot !== $slot`familiar` && !canEquip(item))
+      return fail(`Cannot equip ${item} to ${slot} since canEquip returned false`);
+    this.equips.set(slot, item);
+    return success();
   }
 
-  private equipAccessory(item: Item, slot?: Slot): boolean {
-    if (![undefined, ...$slots`acc1, acc2, acc3`].includes(slot)) return false;
-    if (toSlot(item) !== $slot`acc1`) return false;
-    if (!canEquip(item)) return false;
+  private equipAccessory(item: Item, slot?: Slot): EquipResult {
+    if (![undefined, ...$slots`acc1, acc2, acc3`].includes(slot)) return fail("");
+    if (toSlot(item) !== $slot`acc1`) return fail("");
+    if (!canEquip(item))
+      return fail(`Cannot equip ${item} as accessory since canEquip returned false`);
     if (slot === undefined) {
       // We don't care which of the accessory slots we equip in
       const empty = $slots`acc1, acc2, acc3`.find((s) => !this.equips.has(s));
-      if (empty === undefined) return false;
+      if (empty === undefined) {
+        const acc_names = $slots`acc1, acc2, acc3`.map((s) => this.equips.get(s)).join(", ");
+        return fail(`Cannot equip ${item} as accessory since ${acc_names} are all equipped`);
+      }
       this.equips.set(empty, item);
     } else {
-      if (this.equips.has(slot)) return false;
+      if (this.equips.has(slot)) {
+        return fail(`Cannot equip ${item} to ${slot} since ${this.equips.get(slot)} is equipped`);
+      }
       this.equips.set(slot, item);
     }
-    return true;
+    return success();
   }
 
-  private equipUsingDualWield(item: Item, slot?: Slot): boolean {
-    if (![undefined, $slot`off-hand`].includes(slot)) return false;
-    if (toSlot(item) !== $slot`weapon`) return false;
+  private equipUsingDualWield(item: Item, slot?: Slot): EquipResult {
+    if (![undefined, $slot`off-hand`].includes(slot)) return fail("");
+    if (toSlot(item) !== $slot`weapon`) return fail("");
     if (this.equips.has($slot`weapon`) && weaponHands(this.equips.get($slot`weapon`)) !== 1) {
-      return false;
+      return fail(
+        `Cannot dual-wield ${item} since the weapon ${this.equips.get(
+          $slot`weapon`
+        )} is not 1-handed`
+      );
     }
-    if (this.equips.has($slot`off-hand`)) return false;
-    if (!have($skill`Double-Fisted Skull Smashing`)) return false;
-    if (weaponHands(item) !== 1) return false;
-    if (!canEquip(item)) return false;
+    if (this.equips.has($slot`off-hand`))
+      return fail(
+        `Cannot dual-wield ${item} since the off-hand ${this.equips.get(
+          $slot`off-hand`
+        )} is equipped`
+      );
+    if (!have($skill`Double-Fisted Skull Smashing`))
+      return fail(`Cannot dual-wield ${item} since we do not have Double-Fisted Skull Smashing`);
+    if (weaponHands(item) !== 1) return fail(`Cannot dual-wield ${item} since it is not 1-handed`);
+    if (!canEquip(item)) return fail(`Cannot dual-wield ${item} since canEquip returned false`);
     this.equips.set($slot`off-hand`, item);
-    return true;
+    return success();
   }
 
   private getHoldingFamiliar(item: Item): Familiar | undefined {
@@ -310,43 +391,74 @@ export class Outfit {
     this.applyBonuses(items, (a, b) => a + b);
   }
 
-  private equipUsingFamiliar(item: Item, slot?: Slot): boolean {
-    if (![undefined, $slot`familiar`].includes(slot)) return false;
-    if (this.equips.has($slot`familiar`)) return false;
-    if (booleanModifier(item, "Single Equip")) return false;
+  private equipUsingFamiliar(item: Item, slot?: Slot): EquipResult {
+    if (![undefined, $slot`familiar`].includes(slot)) return fail("");
     const familiar = this.getHoldingFamiliar(item);
-    if (familiar === undefined || !this.equip(familiar)) return false;
+    if (familiar === undefined) return fail("");
+
+    if (this.equips.has($slot`familiar`))
+      return fail(
+        `Cannot equip ${item} with familiar since ${this.equips.get(
+          $slot`familiar`
+        )} is already equipped`
+      );
+    if (booleanModifier(item, "Single Equip"))
+      return fail(
+        `Cannot equip ${item} with familiar since ${this.equips.get(
+          $slot`familiar`
+        )} is already equipped`
+      );
+    const try_familiar = this.equipFamiliar(familiar);
+    if (!try_familiar.success)
+      return fail(`Cannot equip ${item} with familiar ${familiar}; ${try_familiar.reason}`);
+
     this.equips.set($slot`familiar`, item);
-    return true;
+    return success();
   }
 
-  private equipItem(item: Item, slot?: Slot): boolean {
-    return (
-      this.haveEquipped(item, slot) ||
-      this.equipItemNone(item, slot) ||
-      (this.isAvailable(item) &&
-        (this.equipNonAccessory(item, slot) ||
-          this.equipAccessory(item, slot) ||
-          this.equipUsingDualWield(item, slot) ||
-          this.equipUsingFamiliar(item, slot)))
-    );
+  private equipItem(item: Item, slot?: Slot): EquipResult {
+    if (this.haveEquipped(item, slot)) return success();
+    if (item === $item`none`) return this.equipItemNone(item, slot);
+
+    const try_available = this.isAvailable(item);
+    if (!try_available.success) return try_available;
+
+    const reasons = [];
+    for (const equip_method of [
+      this.equipNonAccessory,
+      this.equipAccessory,
+      this.equipUsingDualWield,
+      this.equipUsingFamiliar,
+    ]) {
+      const try_equip_method = equip_method(item, slot);
+      if (try_equip_method.success) return success();
+      else reasons.push(try_equip_method);
+    }
+    return mergeResults(reasons);
   }
 
-  private equipFamiliar(familiar: Familiar): boolean {
-    if (familiar === this.familiar) return true;
-    if (this.familiar !== undefined) return false;
+  private equipFamiliar(familiar: Familiar): EquipResult {
+    if (familiar === this.familiar) return success();
+    if (this.familiar !== undefined)
+      return fail(`Cannot use ${familiar} since we are already using ${this.familiar}`);
     if (familiar !== $familiar.none) {
-      if (!have(familiar)) return false;
-      if (Array.from(this.riders.values()).includes(familiar)) return false;
+      if (!have(familiar)) return fail(`Cannot use ${familiar} since we do not own it`);
+      for (const slot of $slots`crown-of-thrones, buddy-bjorn`) {
+        if (this.riders.get(slot) === familiar) {
+          return fail(`Cannot use ${familiar} since it might be riding ${slot}`);
+        }
+      }
     }
     const item = this.equips.get($slot`familiar`);
-    if (item !== undefined && item !== $item.none && !canEquip(familiar, item)) return false;
+    if (item !== undefined && item !== $item.none && !canEquip(familiar, item))
+      return fail(`Cannot use ${familiar} since it cannot equip the required ${item}`);
     this.familiar = familiar;
-    return true;
+    return success();
   }
 
-  private equipSpec(spec: OutfitSpec): boolean {
-    let succeeded = true;
+  private equipSpec(spec: OutfitSpec): EquipResult {
+    const reasons: EquipResult[] = [];
+
     for (const slotName of outfitSlots) {
       const slot =
         new Map([
@@ -354,13 +466,15 @@ export class Outfit {
           ["offhand", $slot`off-hand`],
         ]).get(slotName) ?? toSlot(slotName);
       const itemOrItems = spec[slotName];
-      if (itemOrItems !== undefined && !this.equip(itemOrItems, slot)) succeeded = false;
+      if (itemOrItems !== undefined) {
+        reasons.push(this.equipVerbose(itemOrItems, slot));
+      }
     }
     for (const item of spec?.equip ?? []) {
-      if (!this.equip(item)) succeeded = false;
+      reasons.push(this.equipVerbose(item));
     }
     if (spec?.familiar !== undefined) {
-      if (!this.equip(spec.familiar)) succeeded = false;
+      reasons.push(this.equipVerbose(spec.familiar));
     }
     this.avoid.push(...(spec?.avoid ?? []));
     this.skipDefaults = this.skipDefaults || (spec.skipDefaults ?? false);
@@ -369,15 +483,13 @@ export class Outfit {
       else this.modifier.push(spec.modifier);
     }
     if (spec.modes) {
-      if (!this.setModes(spec.modes)) {
-        succeeded = false;
-      }
+      reasons.push(this.setModesVerbose(spec.modes));
     }
     if (spec.riders) {
-      if (spec.riders["buddy-bjorn"] && !this.bjornify(spec.riders["buddy-bjorn"]))
-        succeeded = false;
-      if (spec.riders["crown-of-thrones"] && !this.enthrone(spec.riders["crown-of-thrones"]))
-        succeeded = false;
+      if (spec.riders["buddy-bjorn"])
+        reasons.push(this.equipRider(spec.riders["buddy-bjorn"], $slot`buddy-bjorn`));
+      if (spec.riders["crown-of-thrones"])
+        reasons.push(this.equipRider(spec.riders["crown-of-thrones"], $slot`crown-of-thrones`));
     }
     if (spec.bonuses) {
       this.addBonuses(spec.bonuses);
@@ -385,7 +497,7 @@ export class Outfit {
     this.beforeDress(...(spec.beforeDress ?? []));
     this.afterDress(...(spec.afterDress ?? []));
 
-    return succeeded;
+    return mergeResults(reasons);
   }
 
   /**
@@ -400,6 +512,41 @@ export class Outfit {
     // This keeps behavior consistent between slotful and slotless equipping.
     if (things.length === 0) return true;
     return things.some((val) => this.equip(val, slot));
+  }
+
+  /**
+   * Equip a thing to the outfit, with a message if it fails.
+   * See equip for a full behavior description.
+   *
+   * @param thing The thing or things to equip.
+   * @param slot The slot to equip them.
+   * @returns True if the thing was sucessfully equipped, or a reason why it could not be equipped.
+   */
+  public equipVerbose(thing: Equippable, slot?: Slot): EquipResult {
+    if (Array.isArray(thing)) {
+      if (slot !== undefined) {
+        // Equip the first thing in the list that is possible.
+        const reasons = [];
+        for (const element of thing) {
+          const try_equip = this.equipVerbose(element, slot);
+          if (try_equip.success) return success();
+          else reasons.push(try_equip);
+        }
+        return mergeResults(reasons);
+      } else {
+        // Try and equip everything;
+        // Stopping on the first thing that cannot be equipped.
+        for (const element of thing) {
+          const result = this.equipVerbose(element);
+          if (!result.success) return result;
+        }
+        return success();
+      }
+    }
+    if (thing instanceof Item) return this.equipItem(thing, slot);
+    if (thing instanceof Familiar) return this.equipFamiliar(thing);
+    if (thing instanceof Outfit) return this.equipSpec(thing.spec());
+    return this.equipSpec(thing);
   }
 
   /**
@@ -421,15 +568,23 @@ export class Outfit {
    * @param slot The slot to equip them.
    * @returns True if the thing was sucessfully equipped, and false otherwise.
    */
-  equip(thing: Equippable, slot?: Slot): boolean {
-    if (Array.isArray(thing)) {
-      if (slot !== undefined) return this.equipFirst(thing, slot);
-      return thing.every((val) => this.equip(val));
-    }
-    if (thing instanceof Item) return this.equipItem(thing, slot);
-    if (thing instanceof Familiar) return this.equipFamiliar(thing);
-    if (thing instanceof Outfit) return this.equipSpec(thing.spec());
-    return this.equipSpec(thing);
+  public equip(thing: Equippable, slot?: Slot): boolean {
+    return this.equipVerbose(thing, slot).success;
+  }
+
+  /**
+   * Equip a thing to the outfit, and throw an exception if it fails.
+   * See equip for a full behavior description.
+   *
+   * @param thing The thing or things to equip.
+   * @param slot The slot to equip them.
+   * @param context Additional context to include in the error.
+   */
+  public forceEquip(thing: Equippable, slot?: Slot, context?: string): void {
+    const result = this.equipVerbose(thing, slot);
+    if (result.success) return;
+    const contextMsg = context ? ` (${context})` : "";
+    throw `Unable to equip ${thing}${contextMsg}: ${result.success}`;
   }
 
   /**
@@ -476,12 +631,13 @@ export class Outfit {
    * @param target The familiar to use as the rider, or a ranked list of familiars to try to use as the rider.
    * @returns True if we successfully set the slot to a valid rider.
    */
-  private equipRider(target: Familiar | Familiar[], slot: Slot): boolean {
+  private equipRider(target: Familiar | Familiar[], slot: Slot): EquipResult {
     const current = this.riders.get(slot);
     const targets = Array.isArray(target) ? target : [target];
 
     if (current) {
-      return targets.includes(current);
+      if (targets.includes(current)) return success();
+      else return fail(`Cannot equip ${targets} in ${slot} since ${current} is already used`);
     }
 
     // Gather the set of riders that are equipped in other rider slots.
@@ -492,9 +648,9 @@ export class Outfit {
     const fam = targets.find((f) => have(f) && this.familiar !== f && !otherRiders.includes(f));
     if (fam) {
       this.riders.set(slot, fam);
-      return true;
+      return success();
     }
-    return false;
+    return fail(`Cannot equip any of ${targets} in ${slot}`);
   }
 
   /**
@@ -507,7 +663,7 @@ export class Outfit {
    * @returns True if we successfully set the bjorn to a valid target.
    */
   bjornify(target: Familiar | Familiar[]): boolean {
-    return this.equipRider(target, $slot`buddy-bjorn`);
+    return this.equipRider(target, $slot`buddy-bjorn`).success;
   }
 
   /**
@@ -520,7 +676,7 @@ export class Outfit {
    * @returns True if we successfully set the enthrone to a valid target.
    */
   enthrone(target: Familiar | Familiar[]): boolean {
-    return this.equipRider(target, $slot`crown-of-thrones`);
+    return this.equipRider(target, $slot`crown-of-thrones`).success;
   }
 
   /**
@@ -540,13 +696,25 @@ export class Outfit {
    * @returns True if all modes were sucessfully set, and false otherwise.
    */
   setModes(modes: Modes): boolean {
-    let compatible = true;
+    return this.setModesVerbose(modes).success;
+  }
+
+  /**
+   * See setModes for behavior description.
+   *
+   * @param modes Modes to set in this outfit.
+   * @returns True if all modes were sucessfully set, or a reason if they were not.
+   */
+  private setModesVerbose(modes: Modes): EquipResult {
+    const reasons: string[] = [];
 
     // Check if the new modes are compatible with existing modes
     for (const mode of modeableCommands) {
       if (mode === "retrocape") continue; // checked below
       if (this.modes[mode] && modes[mode] && this.modes[mode] !== modes[mode]) {
-        compatible = false;
+        reasons.push(
+          `Mode ${mode} cannot be ${modes[mode]} since it is already ${this.modes[mode]}`
+        );
       }
     }
 
@@ -558,7 +726,9 @@ export class Outfit {
         modes["retrocape"][0] &&
         this.modes["retrocape"][0] !== modes["retrocape"][0]
       ) {
-        compatible = false;
+        reasons.push(
+          `Mode retrocape0 cannot be ${modes["retrocape"][0]} since it is already ${this.modes["retrocape"][0]}`
+        );
       }
 
       if (
@@ -566,7 +736,9 @@ export class Outfit {
         modes["retrocape"][1] &&
         this.modes["retrocape"][1] !== modes["retrocape"][1]
       ) {
-        compatible = false;
+        reasons.push(
+          `Mode retrocape1 cannot be ${modes["retrocape"][1]} since it is already ${this.modes["retrocape"][1]}`
+        );
       }
 
       this.modes["retrocape"][0] = this.modes["retrocape"][0] ?? modes["retrocape"][0];
@@ -577,7 +749,8 @@ export class Outfit {
       ...modes,
       ...this.modes, // if conflict, default to the preexisting modes
     };
-    return compatible;
+    if (reasons.length === 0) return success();
+    return fail(reasons.join(". "));
   }
 
   /**
