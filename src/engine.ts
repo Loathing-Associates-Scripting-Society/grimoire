@@ -141,7 +141,13 @@ export class Engine<A extends string = never, T extends Task<A> = Task<A>> {
     const outfit = this.createOutfit(task);
 
     const task_resources = new CombatResources<A>();
+    // Create the task properly
     this.customize(task, outfit, task_combat, task_resources);
+
+    // Do all preparation actions
+    for (const resource of task_resources.all()) resource.prepare?.();
+    this.prepare(task);
+
     this.dress(task, outfit);
 
     // Prepare combat and choices
@@ -149,8 +155,6 @@ export class Engine<A extends string = never, T extends Task<A> = Task<A>> {
     this.setChoices(task, this.propertyManager);
 
     // Actually perform the task
-    for (const resource of task_resources.all()) resource.prepare?.();
-    this.prepare(task);
     this.do(task);
     while (this.shouldRepeatAdv(task)) {
       set("lastEncounter", "");
